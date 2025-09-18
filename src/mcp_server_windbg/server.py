@@ -101,7 +101,7 @@ def get_or_create_session(
     connection_string: Optional[str] = None,
     cdb_path: Optional[str] = None,
     symbols_path: Optional[str] = None,
-    timeout: int = 30,
+    timeout: int = 600,
     verbose: bool = False
 ) -> CDBSession:
     """Get an existing CDB session or create a new one."""
@@ -183,7 +183,7 @@ def execute_common_analysis_commands(session: CDBSession) -> dict:
 async def serve(
     cdb_path: Optional[str] = None,
     symbols_path: Optional[str] = None,
-    timeout: int = 30,
+    timeout: int = 600,
     verbose: bool = False,
 ) -> None:
     """Run the WinDBG MCP server.
