@@ -4,6 +4,7 @@ import re
 import os
 import platform
 from typing import List, Optional
+import logging
 
 # Regular expression to detect CDB prompts
 PROMPT_REGEX = re.compile(r"^\d+:\d+>\s*$")
@@ -67,6 +68,7 @@ class CDBSession:
         self.remote_connection = remote_connection
         self.timeout = timeout
         self.verbose = verbose
+        self.logger = logging.getLogger(__name__)
         
         # Find cdb executable
         self.cdb_path = self._find_cdb_executable(cdb_path)
@@ -101,6 +103,7 @@ class CDBSession:
             )
         except Exception as e:
             raise CDBError(f"Failed to start CDB process: {str(e)}")
+        self.logger.info("Started CDB process pid=%s args=%s", getattr(self.process, 'pid', None), cmd_args)
             
         self.output_lines = []
         self.lock = threading.Lock()
@@ -115,6 +118,7 @@ class CDBSession:
         except CDBError:
             self.shutdown()
             raise CDBError("CDB initialization timed out")
+        self.logger.debug("CDB ready for commands")
             
         # Run initial commands if provided
         if initial_commands:
@@ -145,6 +149,9 @@ class CDBSession:
                 line = line.rstrip()
                 if self.verbose:
                     print(f"CDB > {line}")
+                else:
+                    # Log at debug level to file when not printing verbosely
+                    self.logger.debug("CDB > %s", line)
                     
                 with self.lock:
                     buffer.append(line)
@@ -159,6 +166,7 @@ class CDBSession:
         except (IOError, ValueError) as e:
             if self.verbose:
                 print(f"CDB output reader error: {e}")
+            self.logger.warning("CDB output reader error: %s", e)
                 
     def _wait_for_prompt(self, timeout=None):
         """Wait for CDB to be ready for commands by sending a marker"""
@@ -195,6 +203,7 @@ class CDBSession:
             
         try:
             # Send the command followed by our marker to detect completion
+            self.logger.info("CDB send: %s", command)
             self.process.stdin.write(f"{command}\n{COMMAND_MARKER}\n")
             self.process.stdin.flush()
         except IOError as e:
@@ -207,6 +216,7 @@ class CDBSession:
         with self.lock:
             result = self.output_lines.copy()
             self.output_lines = []
+        self.logger.debug("CDB recv (%d lines) for '%s'", len(result), command)
         return result
 
     def shutdown(self):
@@ -232,8 +242,10 @@ class CDBSession:
         except Exception as e:
             if self.verbose:
                 print(f"Error during shutdown: {e}")
+            self.logger.warning("Error during CDB shutdown: %s", e)
         finally:
             self.process = None
+            self.logger.info("CDB process closed")
 
     def get_session_id(self) -> str:
         """Get a unique identifier for this CDB session."""

@@ -1,4 +1,5 @@
 import os
+import logging
 import traceback
 import glob
 import winreg
@@ -21,6 +22,9 @@ from pydantic import BaseModel, Field, model_validator
 # Dictionary to store CDB sessions keyed by dump file path
 active_sessions: Dict[str, CDBSession] = {}
 
+# Module logger
+logger = logging.getLogger(__name__)
+
 def get_local_dumps_path() -> Optional[str]:
     """Get the local dumps path from the Windows registry."""
     try:
@@ -30,14 +34,16 @@ def get_local_dumps_path() -> Optional[str]:
         ) as key:
             dump_folder, _ = winreg.QueryValueEx(key, "DumpFolder")
             if os.path.exists(dump_folder) and os.path.isdir(dump_folder):
+                logger.debug("Resolved LocalDumps path from registry: %s", dump_folder)
                 return dump_folder
-    except (OSError, WindowsError):
+    except (OSError, WindowsError) as e:
         # Registry key might not exist or other issues
-        pass
+        logger.warning("LocalDumps registry lookup failed; falling back to default path", exc_info=True)
     
     # Default Windows dump location
     default_path = os.path.join(os.environ.get("LOCALAPPDATA", ""), "CrashDumps")
     if os.path.exists(default_path) and os.path.isdir(default_path):
+        logger.debug("Resolved default CrashDumps path: %s", default_path)
         return default_path
         
     return None
@@ -127,13 +133,15 @@ def get_or_create_session(
                 verbose=verbose
             )
             active_sessions[session_id] = session
+            logger.info("Created new CDB session: %s", session_id)
             return session
         except Exception as e:
+            logger.exception("Failed to create CDB session for %s", session_id)
             raise McpError(ErrorData(
                 code=INTERNAL_ERROR,
                 message=f"Failed to create CDB session: {str(e)}"
             ))
-    
+    logger.debug("Using existing CDB session: %s", session_id)
     return active_sessions[session_id]
 
 
@@ -154,8 +162,10 @@ def unload_session(dump_path: Optional[str] = None, connection_string: Optional[
         try:
             active_sessions[session_id].shutdown()
             del active_sessions[session_id]
+            logger.info("Unloaded CDB session: %s", session_id)
             return True
         except Exception:
+            logger.exception("Error unloading CDB session: %s", session_id)
             return False
     
     return False
@@ -170,12 +180,14 @@ def execute_common_analysis_commands(session: CDBSession) -> dict:
     results = {}
     
     try:
+        logger.debug("Executing common analysis commands for session: %s", session.get_session_id())
         results["info"] = session.send_command(".lastevent")
         results["exception"] = session.send_command("!analyze -v")
         results["modules"] = session.send_command("lm")
         results["threads"] = session.send_command("~")
     except CDBError as e:
         results["error"] = str(e)
+        logger.warning("Common analysis commands failed: %s", e)
     
     return results
 
@@ -194,6 +206,7 @@ async def serve(
         timeout: Command timeout in seconds
         verbose: Whether to enable verbose output
     """
+    logger.info("Starting MCP server with params cdb_path=%s symbols_path=%s timeout=%s verbose=%s", cdb_path, symbols_path, timeout, verbose)
     server = Server("mcp-windbg")
     
     @server.list_tools()
@@ -252,6 +265,8 @@ async def serve(
     @server.call_tool()
     async def call_tool(name, arguments: dict) -> list[TextContent]:
         try:
+            logger.info("Tool call: %s", name)
+            logger.debug("Tool arguments: %s", arguments)
             if name == "open_windbg_dump":
                 # Check if dump_path is missing or empty
                 if "dump_path" not in arguments or not arguments.get("dump_path"):
@@ -268,7 +283,8 @@ async def serve(
                             for i, dump_file in enumerate(dump_files[:10]):  # Limit to 10 dumps to avoid clutter
                                 try:
                                     size_mb = round(os.path.getsize(dump_file) / (1024 * 1024), 2)
-                                except (OSError, IOError):
+                                except (OSError, IOError) as e:
+                                    logger.warning("Failed to get size for dump file: %s", dump_file, exc_info=True)
                                     size_mb = "unknown"
                                 
                                 dumps_found_text += f"{i+1}. {dump_file} ({size_mb} MB)\n"
@@ -291,23 +307,28 @@ async def serve(
                 
                 results = []
                 
+                logger.debug("Running .lastevent for dump: %s", args.dump_path)
                 crash_info = session.send_command(".lastevent")
                 results.append("### Crash Information\n```\n" + "\n".join(crash_info) + "\n```\n\n")
                 
                 # Run !analyze -v
+                logger.debug("Running !analyze -v")
                 analysis = session.send_command("!analyze -v")
                 results.append("### Crash Analysis\n```\n" + "\n".join(analysis) + "\n```\n\n")
                 
                 # Optional
                 if args.include_stack_trace:
+                    logger.debug("Including stack trace via kb")
                     stack = session.send_command("kb")
                     results.append("### Stack Trace\n```\n" + "\n".join(stack) + "\n```\n\n")
                 
                 if args.include_modules:
+                    logger.debug("Including modules via lm")
                     modules = session.send_command("lm")
                     results.append("### Loaded Modules\n```\n" + "\n".join(modules) + "\n```\n\n")
                 
                 if args.include_threads:
+                    logger.debug("Including threads via ~")
                     threads = session.send_command("~")
                     results.append("### Threads\n```\n" + "\n".join(threads) + "\n```\n\n")
                 
@@ -322,23 +343,28 @@ async def serve(
                 results = []
                 
                 # Get target information for remote debugging
+                logger.debug("Fetching target process info via !peb")
                 target_info = session.send_command("!peb")
                 results.append("### Target Process Information\n```\n" + "\n".join(target_info) + "\n```\n\n")
                 
                 # Get current state
+                logger.debug("Fetching current registers via r")
                 current_state = session.send_command("r")
                 results.append("### Current Registers\n```\n" + "\n".join(current_state) + "\n```\n\n")
                 
                 # Optional
                 if args.include_stack_trace:
+                    logger.debug("Including stack trace via kb (remote)")
                     stack = session.send_command("kb")
                     results.append("### Stack Trace\n```\n" + "\n".join(stack) + "\n```\n\n")
                 
                 if args.include_modules:
+                    logger.debug("Including modules via lm (remote)")
                     modules = session.send_command("lm")
                     results.append("### Loaded Modules\n```\n" + "\n".join(modules) + "\n```\n\n")
                 
                 if args.include_threads:
+                    logger.debug("Including threads via ~ (remote)")
                     threads = session.send_command("~")
                     results.append("### Threads\n```\n" + "\n".join(threads) + "\n```\n\n")
 
@@ -353,6 +379,7 @@ async def serve(
                     dump_path=args.dump_path, connection_string=args.connection_string, 
                     cdb_path=cdb_path, symbols_path=symbols_path, timeout=timeout, verbose=verbose
                 )
+                logger.info("Running custom WinDBG command: %s", args.command)
                 output = session.send_command(args.command)
                 
                 return [TextContent(
@@ -400,6 +427,7 @@ async def serve(
                         ))
                 
                 if not os.path.exists(args.directory_path) or not os.path.isdir(args.directory_path):
+                    logger.warning("Invalid dump directory path: %s", args.directory_path)
                     raise McpError(ErrorData(
                         code=INVALID_PARAMS,
                         message=f"Directory not found: {args.directory_path}"
@@ -426,7 +454,8 @@ async def serve(
                     # Get file size in MB
                     try:
                         size_mb = round(os.path.getsize(dump_file) / (1024 * 1024), 2)
-                    except (OSError, IOError):
+                    except (OSError, IOError) as e:
+                        logger.warning("Failed to get size for dump file: %s", dump_file, exc_info=True)
                         size_mb = "unknown"
                     
                     result_text += f"{i+1}. {dump_file} ({size_mb} MB)\n"
@@ -442,9 +471,11 @@ async def serve(
             ))
             
         except McpError:
+            logger.debug("MCP error raised in tool call %s", name)
             raise
         except Exception as e:
             traceback_str = traceback.format_exc()
+            logger.exception("Unhandled error executing tool %s", name)
             raise McpError(ErrorData(
                 code=INTERNAL_ERROR,
                 message=f"Error executing tool {name}: {str(e)}\n{traceback_str}"
@@ -462,7 +493,7 @@ def cleanup_sessions():
             if session is not None:
                 session.shutdown()
         except Exception:
-            pass
+            logger.exception("Error while cleaning up session: %s", dump_path)
     active_sessions.clear()
 
 # Register cleanup on module exit

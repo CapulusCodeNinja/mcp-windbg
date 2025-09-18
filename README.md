@@ -63,7 +63,7 @@ I've written about the whole journey in blog.
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/svnscha/mcp-windbg.git
+git clone https://github.com/CapulusCodeNinja/mcp-windbg
 cd mcp-windbg
 ```
 
@@ -141,7 +141,11 @@ Available options:
 - `--cdb-path CDB_PATH`: Custom path to cdb.exe
 - `--symbols-path SYMBOLS_PATH`: Custom symbols path
 - `--timeout TIMEOUT`: Command timeout in seconds (default: 30)
-- `--verbose`: Enable verbose output
+- `--verbose`: Enable console debug output (also raises global log level to DEBUG)
+- `--log-file PATH`: Path to log file (default: `%LOCALAPPDATA%/mcp-windbg/mcp-windbg.log`, fallback: `./logs/mcp-windbg.log`)
+- `--log-level LEVEL`: File log level (`CRITICAL`, `ERROR`, `WARNING`, `INFO`, `DEBUG`; default: `INFO`)
+- `--log-max-bytes BYTES`: Max size before rotating the log file (default: `5242880`)
+- `--log-backup-count COUNT`: Number of rotated files to keep (default: `5`)
 
 
 2. Customize the configuration as needed:
@@ -157,6 +161,66 @@ Once the server is configured in VS Code:
 2. The MCP server will appear in Copilot's available tools
 3. The WinDBG analysis capabilities will be accessible through Copilot's interface
 4. You can now analyze crash dumps directly through Copilot using natural language queries
+
+## Logging
+
+The server writes structured logs to a rotating file so unattended runs are debuggable. By default, the log is created at `%LOCALAPPDATA%/mcp-windbg/mcp-windbg.log` (or `./logs/mcp-windbg.log` if `%LOCALAPPDATA%` is unavailable).
+
+### Enable logging from the command line
+
+```bash
+python -m mcp_server_windbg --log-level INFO
+```
+
+Specify a custom path and more detail:
+
+```bash
+python -m mcp_server_windbg --log-file "D:\\logs\\windbg-mcp.log" --log-level DEBUG
+```
+
+Control rotation (size in bytes, backups to keep):
+
+```bash
+python -m mcp_server_windbg --log-max-bytes 10485760 --log-backup-count 7
+```
+
+Show logs in the console as well (in addition to the file):
+
+```bash
+python -m mcp_server_windbg --verbose
+```
+
+### Enable logging in VS Code MCP integration
+
+Add logging flags to the `args` array in `.vscode/mcp.json`:
+
+```json
+{
+    "servers": {
+        "mcp_server_windbg": {
+            "type": "stdio",
+            "command": "${workspaceFolder}/.venv/Scripts/python",
+            "args": [
+                "-m",
+                "mcp_server_windbg",
+                "--log-file", "${workspaceFolder}/.logs/windbg-mcp.log",
+                "--log-level", "DEBUG",
+                "--log-max-bytes", "10485760",
+                "--log-backup-count", "7"
+            ],
+            "env": {
+                "_NT_SYMBOL_PATH": "SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols"
+            }
+        }
+    }
+}
+```
+
+What gets logged:
+- server lifecycle (start parameters, tool calls, cleanup)
+- sessions (create/unload, errors)
+- WinDBG commands (command text sent and response size)
+- file/registry issues (registry lookup failures, file size access errors, invalid directories)
 
 ## Tools
 
